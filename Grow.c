@@ -23,6 +23,8 @@
  */
 #include	"mdadm.h"
 #include	"dlink.h"
+#include	"xmalloc.h"
+
 #include	<sys/mman.h>
 #include	<stddef.h>
 #include	<stdint.h>
@@ -2941,15 +2943,24 @@ static int impose_reshape(struct mdinfo *sra,
 		 * persists from some earlier problem.
 		 */
 		int err = 0;
+
 		if (sysfs_set_num(sra, NULL, "chunk_size", info->new_chunk) < 0)
 			err = errno;
+
 		if (!err && sysfs_set_num(sra, NULL, "layout",
 					  reshape->after.layout) < 0)
 			err = errno;
+
+		/* new_level is introduced in kernel 6.12 */
+		if (!err && get_linux_version() >= 6012000 &&
+				sysfs_set_num(sra, NULL, "new_level", info->new_level) < 0)
+			err = errno;
+
 		if (!err && subarray_set_num(container, sra, "raid_disks",
 					     reshape->after.data_disks +
 					     reshape->parity) < 0)
 			err = errno;
+
 		if (err) {
 			pr_err("Cannot set device shape for %s\n", devname);
 
@@ -3025,6 +3036,13 @@ static int impose_level(int fd, int level, char *devname, int verbose)
 			      makedev(disk.major, disk.minor));
 			hot_remove_disk(fd, makedev(disk.major, disk.minor), 1);
 		}
+		/*
+		 * hot_remove_disk lets kernel set MD_RECOVERY_RUNNING
+		 * and it can't set level. It needs to wait sometime
+		 * to let md thread to clear the flag.
+		 */
+		pr_info("wait 5 seconds to give kernel space to finish job\n");
+		sleep_for(5, 0, true);
 	}
 	c = map_num(pers, level);
 	if (c) {
@@ -3685,9 +3703,12 @@ started:
 		set_array_size(st, info, info->text_version);
 
 	if (info->new_level != reshape.level) {
-		if (fd < 0)
-			fd = open(devname, O_RDONLY);
-		impose_level(fd, info->new_level, devname, verbose);
+		fd = open_dev(sra->sys_name);
+		if (fd < 0) {
+			pr_err("Can't open %s\n", sra->sys_name);
+			goto out;
+		}
+		impose_level(fd, info->new_level, sra->sys_name, verbose);
 		close(fd);
 		if (info->new_level == 0)
 			st->update_tail = NULL;
@@ -4139,8 +4160,8 @@ int progress_reshape(struct mdinfo *info, struct reshape *reshape,
 		 * waiting forever on a dead array
 		 */
 		char action[SYSFS_MAX_BUF_SIZE];
-		if (sysfs_get_str(info, NULL, "sync_action", action, sizeof(action)) <= 0 ||
-		    strncmp(action, "reshape", 7) != 0)
+
+		if (sysfs_get_str(info, NULL, "sync_action", action, sizeof(action)) <= 0)
 			break;
 		/* Some kernels reset 'sync_completed' to zero
 		 * before setting 'sync_action' to 'idle'.
@@ -4148,12 +4169,18 @@ int progress_reshape(struct mdinfo *info, struct reshape *reshape,
 		 */
 		if (completed == 0 && advancing &&
 		    strncmp(action, "idle", 4) == 0 &&
-		    info->reshape_progress > 0)
+		    info->reshape_progress > 0) {
+			info->reshape_progress = need_backup;
 			break;
+		}
 		if (completed == 0 && !advancing &&
 		    strncmp(action, "idle", 4) == 0 &&
 		    info->reshape_progress <
-		    (info->component_size * reshape->after.data_disks))
+		    (info->component_size * reshape->after.data_disks)) {
+			info->reshape_progress = need_backup;
+			break;
+		}
+		if (strncmp(action, "reshape", 7) != 0)
 			break;
 		sysfs_wait(fd, NULL);
 		if (sysfs_fd_get_ll(fd, &completed) < 0)

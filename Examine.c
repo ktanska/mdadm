@@ -22,14 +22,16 @@
  *    Email: <neilb@suse.de>
  */
 
-#include	"mdadm.h"
 #include	"dlink.h"
+#include	"mdadm.h"
+#include	"md_u.h"
+#include	"md_p.h"
+#include	"xmalloc.h"
 
 #if ! defined(__BIG_ENDIAN) && ! defined(__LITTLE_ENDIAN)
 #error no endian defined
 #endif
-#include	"md_u.h"
-#include	"md_p.h"
+
 int Examine(struct mddev_dev *devlist,
 	    struct context *c,
 	    struct supertype *forcest)
@@ -111,8 +113,10 @@ int Examine(struct mddev_dev *devlist,
 		close(fd);
 
 		if (err) {
-			if (st)
+			if (st) {
 				st->ss->free_super(st);
+				free(st);
+			}
 			continue;
 		}
 
@@ -152,18 +156,23 @@ int Examine(struct mddev_dev *devlist,
 			if (st->ss->export_examine_super)
 				st->ss->export_examine_super(st);
 			st->ss->free_super(st);
+			free(st);
 		} else {
 			printf("%s:\n",devlist->devname);
 			st->ss->examine_super(st, c->homehost);
 			st->ss->free_super(st);
+			free(st);
 		}
 	}
 	if (c->brief) {
-		struct array *ap;
-		for (ap = arrays; ap; ap = ap->next) {
+		struct array *ap = arrays, *next;
+
+		while (ap) {
 			char sep='=';
 			char *d;
 			int newline = 0;
+
+			next = ap->next;
 
 			ap->st->ss->brief_examine_super(ap->st, c->verbose > 0);
 			if (ap->spares && !ap->st->ss->external)
@@ -182,10 +191,15 @@ int Examine(struct mddev_dev *devlist,
 					printf("\n");
 				ap->st->ss->brief_examine_subarrays(ap->st, c->verbose);
 			}
-			ap->st->ss->free_super(ap->st);
-			/* FIXME free ap */
 			if (ap->spares || c->verbose > 0)
 				printf("\n");
+
+			ap->st->ss->free_super(ap->st);
+			free(ap->st);
+			dl_free_all(ap->devs);
+			free(ap);
+
+			ap = next;
 		}
 	}
 	return rv;

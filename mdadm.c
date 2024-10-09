@@ -27,6 +27,8 @@
 
 #include "mdadm.h"
 #include "md_p.h"
+#include "xmalloc.h"
+
 #include <ctype.h>
 
 /**
@@ -1703,8 +1705,7 @@ int main(int argc, char *argv[])
 				rv = 1;
 				break;
 			}
-			rv = IncrementalRemove(devlist->devname, remove_path,
-					       c.verbose);
+			rv = Incremental_remove(devlist->devname, remove_path, c.verbose);
 		} else
 			rv = Incremental(devlist, &c, ss);
 		break;

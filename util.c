@@ -24,6 +24,8 @@
 
 #include	"mdadm.h"
 #include	"md_p.h"
+#include	"xmalloc.h"
+
 #include	<sys/socket.h>
 #include	<sys/utsname.h>
 #include	<sys/wait.h>
@@ -513,6 +515,9 @@ int enough(int level, int raid_disks, int layout, int clean, char *avail)
 	int i;
 	int avail_disks = 0;
 
+	if (raid_disks <= 0)
+		return 0;
+
 	for (i = 0; i < raid_disks; i++)
 		avail_disks += !!avail[i];
 
@@ -521,7 +526,7 @@ int enough(int level, int raid_disks, int layout, int clean, char *avail)
 		/* This is the tricky one - we need to check
 		 * which actual disks are present.
 		 */
-		copies = (layout&255)* ((layout>>8) & 255);
+		copies = (layout & 255) * ((layout >> 8) & 255);
 		first = 0;
 		do {
 			/* there must be one of the 'copies' form 'first' */
@@ -531,16 +536,16 @@ int enough(int level, int raid_disks, int layout, int clean, char *avail)
 			while (n--) {
 				if (avail[this])
 					cnt++;
-				this = (this+1) % raid_disks;
+				this = (this + 1) % raid_disks;
 			}
 			if (cnt == 0)
 				return 0;
-			first = (first+(layout&255)) % raid_disks;
+			first = (first + (layout & 255)) % raid_disks;
 		} while (first != 0);
 		return 1;
 
 	case LEVEL_MULTIPATH:
-		return avail_disks>= 1;
+		return avail_disks >= 1;
 	case LEVEL_LINEAR:
 	case 0:
 		return avail_disks == raid_disks;
@@ -556,12 +561,12 @@ int enough(int level, int raid_disks, int layout, int clean, char *avail)
 		/* FALL THROUGH */
 	case 5:
 		if (clean)
-			return avail_disks >= raid_disks-1;
+			return avail_disks >= raid_disks - 1;
 		else
 			return avail_disks >= raid_disks;
 	case 6:
 		if (clean)
-			return avail_disks >= raid_disks-2;
+			return avail_disks >= raid_disks - 2;
 		else
 			return avail_disks >= raid_disks;
 	default:
@@ -1003,7 +1008,7 @@ static bool is_devname_numbered(const char *devname, const char *pref, const int
 	if (parse_num(&val, devname + pref_len) != 0)
 		return false;
 
-	if (val > 127)
+	if (val > 1024)
 		return false;
 
 	return true;
@@ -1105,17 +1110,6 @@ int dev_open(char *dev, int flags)
 		if (mknod(devname, S_IFBLK|0600, makedev(major, minor)) == 0) {
 			fd = open(devname, flags);
 			unlink(devname);
-		}
-		if (fd < 0) {
-			/* Try /tmp as /dev appear to be read-only */
-			snprintf(devname, sizeof(devname),
-				 "/tmp/.tmp.md.%d:%d:%d",
-				 (int)getpid(), major, minor);
-			if (mknod(devname, S_IFBLK|0600,
-				  makedev(major, minor)) == 0) {
-				fd = open(devname, flags);
-				unlink(devname);
-			}
 		}
 	} else
 		fd = open(dev, flags);
@@ -1850,14 +1844,23 @@ int hot_remove_disk(int mdfd, unsigned long dev, int force)
 
 int sys_hot_remove_disk(int statefd, int force)
 {
+	static const char val[] = "remove";
 	int cnt = force ? 500 : 5;
-	int ret;
 
-	while ((ret = write(statefd, "remove", 6)) == -1 &&
-	       errno == EBUSY &&
-	       cnt-- > 0)
+	while (cnt--) {
+		int err = 0;
+		int ret = sysfs_write_descriptor(statefd, val, strlen(val), &err);
+
+		if (ret == MDADM_STATUS_SUCCESS)
+			return 0;
+
+		if (err != EBUSY)
+			break;
+
 		sleep_for(0, MSEC_TO_NSEC(10), true);
-	return ret == 6 ? 0 : -1;
+	}
+
+	return -1;
 }
 
 int set_array_info(int mdfd, struct supertype *st, struct mdinfo *info)
