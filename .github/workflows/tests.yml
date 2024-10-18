@@ -1,0 +1,49 @@
+name: review
+on:
+  pull_request:
+    paths:
+      - '*.c'
+      - '*.h'
+jobs:
+  upstream_tests:
+     if: ${{ github.repository == 'md-raid-utilities/mdadm' }}
+     runs-on: self-hosted
+     timeout-minutes: 120
+     name: upstream tests
+     steps:
+     - uses: actions/checkout@v4
+       with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        fetch-depth: 0
+     - name: 'Prepare machine'
+       run: |
+          cd ..
+          vagrant halt
+          vagrant status
+          vagrant up
+     - name: 'Run tests'
+       run: |
+          cd ..
+          vagrant ssh -c "cd /home/vagrant/host/mdadm && .github/tools/run_mdadm_tests.sh"
+     - name: 'Copy logs to host machine'
+       run: |
+          cd ..
+          vagrant ssh -c "sudo mkdir /home/vagrant/host/logs && mv /var/tmp/*.log /home/vagrant/host/logs"
+     - name: "Save artifacts"
+       uses: actions/upload-artifact@v4
+       with:
+         name: "Logs from failed tests"
+         path: /home/vagrant/host/logs/*.log
+     - name: "Clean logs"
+       run: |
+          cd ..
+          vagrant ssh -c "sudo rm -r /home/vagrant/host/logs"
+  cleanup:
+    runs-on: self-hosted
+    steps:
+      - name: Restore clean VM
+        run:  |
+          cd ..
+          vagrant ssh -c "sudo mdadm -Ss"
+          vagrant halt
+
