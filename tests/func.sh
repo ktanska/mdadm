@@ -357,14 +357,33 @@ check() {
 		max=`cat /proc/sys/dev/raid/speed_limit_max`
 		echo 200000 > /proc/sys/dev/raid/speed_limit_max
 		sleep 0.1
-		while grep -Eq '(resync|recovery|reshape|check|repair) *=' /proc/mdstat ||
-			grep -v idle > /dev/null /sys/block/md*/md/sync_action
-		do
-			sleep 0.5
+		max_iterations=5
+		# wait up to 5 seconds for one of action appeared in sync_action,
+		# which will trigger grow-continue process
+		for ((i = 0 ; i < max_iterations ; i++ )); do
+			sync_action=`grep -Eq '(resync|recovery|reshape|check|repair) *=' /proc/mdstat || grep -v idle > /dev/null /sys/block/md*/md/sync_action`
+			if [ "$sync_action" ]; then
+				break
+			fi
+			sleep 1
 		done
+
+		if [[ i == max_iterations ]]; then
+			echo >&2 "Timeout waiting for reshape operation appeared in sync_action"
+			exit 1
+		fi
+
+		# wait for grow-continue to finish but break if sync_action does not
+		# contain any reshape value
 		while ps auxf | grep "mdadm --grow --continue" | grep -v grep
 		do
-			sleep 1
+			sync_action=`grep -Eq '(resync|recovery|reshape|check|repair) *=' /proc/mdstat || grep -v idle > /dev/null /sys/block/md*/md/sync_action`
+			if [ "$sync_action" ]; then
+				sleep 1
+				continue
+			fi
+			echo >&2 "Grow continue does not finish but reshape is done"
+			exit 1
 		done
 		echo $min > /proc/sys/dev/raid/speed_limit_min
 		echo $max > /proc/sys/dev/raid/speed_limit_max
